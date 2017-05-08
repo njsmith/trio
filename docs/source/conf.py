@@ -193,6 +193,14 @@ todo_include_todos = False
 import sphinx_rtd_theme
 html_theme = 'sphinx_rtd_theme'
 html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+# And this is a magic variable that RTD's monkeypatched conf.py would set if
+# it were overridding our theme to be sphinx_rtd_theme
+using_rtd_theme = True
+# The next line is pure waving-a-dead-chicken-over-it; RTD's monkeypatched
+# conf.py sets it, and we got weird rendering effects when we disabled the
+# monkeypatching by setting html_theme = 'sphinx_rtd_theme' ourselves, so
+# maybe it will help something.
+html_style = None
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
