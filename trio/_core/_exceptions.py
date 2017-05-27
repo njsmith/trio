@@ -3,7 +3,7 @@ import attr
 # Re-exported
 __all__ = [
     "TrioInternalError", "RunFinishedError", "WouldBlock", "Cancelled",
-    "ResourceBusyError",
+    "ResourceBusyError", "NonAwaitedCoroutines",
 ]
 
 class TrioInternalError(Exception):
@@ -31,6 +31,17 @@ class RunFinishedError(RuntimeError):
     pass
 
 RunFinishedError.__module__ = "trio"
+
+class NonAwaitedCoroutines(RuntimeError):
+    """Raised by blocking calls if a non-awaited coroutine detected in current task
+    """
+
+    def __init__(self, *args, coroutines=None, **kwargs):
+        self.coroutines = set(coroutines)
+        super().__init__(*args, **kwargs)
+
+NonAwaitedCoroutines.__module__ = "trio"
+
 
 
 class WouldBlock(Exception):
