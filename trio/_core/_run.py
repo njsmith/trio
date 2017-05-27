@@ -11,6 +11,8 @@ import sys
 from math import inf
 import functools
 
+import textwrap
+
 import attr
 from sortedcontainers import SortedDict
 from async_generator import async_generator, yield_
@@ -19,7 +21,7 @@ from .._util import acontextmanager
 
 from .. import _core
 from ._exceptions import (
-    TrioInternalError, RunFinishedError, Cancelled, WouldBlock
+    TrioInternalError, RunFinishedError, Cancelled, WouldBlock, NonAwaitedCoroutine
 )
 from ._multierror import MultiError
 from ._result import Result, Error, Value
@@ -71,6 +73,99 @@ class SystemClock:
     def deadline_to_sleep_time(self, deadline):
         return deadline - self.current_time()
 
+################################################################
+# Protection against non-awaited coroutines
+################################################################
+
+class CoroProtect:
+    """
+    Protector preventing the creation of non-awaited coroutines
+    between two checkpoints.
+    """
+
+    def __init__(self):
+        self._pending_test = set()
+        self._protecting = True
+        self._key = object()
+
+    def reset(self):
+        self._pending_test = set()
+        self._protecting = True
+
+    @contextmanager
+    def ensure_await(self):
+        """
+        Context Manager to ensure all coroutines are awaited.
+
+        Ensure that any coroutine created within this context
+        manager is awaited. The context manager throw in the
+        coroutine  if it is not awaited on context manager exit.
+        """
+        p = self._protecting
+        self._protecting = True
+        try:
+            yield
+            self.check()
+        finally:
+            self._protecting = p
+
+
+    def coro_wrapper(self, coro):
+        """
+        Coroutine wrapper to track creation of coroutines.
+        """
+        if self._protecting:
+            self._pending_test.add(coro)
+        return coro
+
+    def await_later(self, coro):
+        """
+        Mark a coroutine as safe to no be awaited, and return it.
+        """
+        self._pending_test.discard(coro)
+        return coro
+
+    @contextmanager
+    def allow_noawait(self):
+        """
+        Context Manager to allow coroutines to not be awaited.
+
+        By default in trio all created coroutines need to be awaited before the
+        next stop into the scheduler, this relaxes the constraint when inside
+        this context manager.
+        """
+
+        p = self._protecting
+        self._protecting = False
+        try:
+            yield
+        finally:
+            self._protecting = p
+
+    def install(self):
+        """install a coroutine wrapper to track created coroutines.
+        """
+        sys.set_coroutine_wrapper(self.coro_wrapper)
+        return self
+
+    def check(self, error=True):
+        """
+        check that since last invocation no coroutine has been left unawaited.
+
+        Return an unawaited coroutine if one has been found.
+        """
+        while self._pending_test:
+            coro = self._pending_test.pop()
+            if inspect.getcoroutinestate(coro) == 'CORO_CREATED':
+                return coro
+                #print(f'Coroutine {coro} was not awaited.')
+                #if error:
+                #    coro.throw(ValueError(f'Coroutine {coro} was not awaited.'))
+                #else :
+                #    print(RuntimeError(f'Coroutine {coro} was not awaited.'))
+        return None
+
+protector = CoroProtect()
 
 ################################################################
 # CancelScope and friends
@@ -370,6 +465,7 @@ class Task:
     # tasks start out unscheduled, and unscheduled tasks have None here
     _next_send = attr.ib(default=None)
     _abort_func = attr.ib(default=None)
+    _unawaited_coro = attr.ib(default=False)
 
     # XX maybe these should be exposed as part of a statistics() method?
     _cancel_points = attr.ib(default=0)
@@ -636,7 +732,7 @@ class Runner:
             raise RuntimeError("Nursery is closed to new arrivals")
         if nursery is None:
             assert self.init_task is None
-        coro = async_fn(*args)
+        coro = protector.await_later(async_fn(*args))
         if not inspect.iscoroutine(coro):
             raise TypeError("spawn expected an async function")
         if name is None:
@@ -1041,7 +1137,8 @@ class Runner:
 ################################################################
 
 def run(async_fn, *args, clock=None, instruments=[],
-        restrict_keyboard_interrupt_to_checkpoints=False):
+        restrict_keyboard_interrupt_to_checkpoints=False,
+        allow_unawaited_coroutines=False):
     """Run a trio-flavored async function, and return the result.
 
     Calling::
@@ -1135,6 +1232,8 @@ def run(async_fn, *args, clock=None, instruments=[],
         clock = SystemClock()
     instruments = list(instruments)
     io_manager = TheIOManager()
+    if not allow_unawaited_coroutines:
+        protector.install()
     runner = Runner(clock=clock, instruments=instruments, io_manager=io_manager)
     GLOBAL_RUN_CONTEXT.runner = runner
     locals()[LOCALS_KEY_KI_PROTECTION_ENABLED] = True
@@ -1257,7 +1356,23 @@ def run_impl(runner, async_fn, args):
                 #   https://bugs.python.org/issue29590
                 # So now we send in the Result object and unwrap it on the
                 # other side.
+                if task._unawaited_coro:
+                    task.coro.throw(NonAwaitedCoroutine(textwrap.dedent(
+                    f'''
+                    Coroutine {task._unawaited_coro} was not awaited.
+                                      
+                    Trio has detected that at least a coroutine has not been between awaited
+                    between this checkpoint point and previous one. This is may be due
+                    to a missing `await` 
+
+                    If you need to create non-awaited coroutines wrap them in `await_later`,
+                    or user the `allow_noawait`/`ensure_await` contextmanagers.
+                    '''[1:]))
+                    )
                 msg = task.coro.send(next_send)
+                unawaited_coro = protector.check()
+                if unawaited_coro:
+                   task._unawaited_coro = unawaited_coro
             except StopIteration as stop_iteration:
                 final_result = Value(stop_iteration.value)
             except BaseException as task_exc:

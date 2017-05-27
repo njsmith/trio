@@ -32,6 +32,14 @@ class RunFinishedError(RuntimeError):
 
 RunFinishedError.__module__ = "trio"
 
+class NonAwaitedCoroutine(RuntimeError):
+    """Raised by blocking calls if a non-awaited coroutine detected in current task
+    """
+    pass
+
+NonAwaitedCoroutine.__module__ = "trio"
+
+
 
 class WouldBlock(Exception):
     """Raised by ``X_nowait`` functions if ``X`` would block.
