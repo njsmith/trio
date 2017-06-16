@@ -1722,7 +1722,10 @@ def test_run_with_allow_non_awaited_coroutine_true():
     async def run_me():
 
         def handler(exc):
-            return exc
+            """
+            This will actually not be called, as there will be no errors.
+            """
+            return exc  # pragma: no cover
 
         async def unawaited():
             pass  # pragma: no cover
