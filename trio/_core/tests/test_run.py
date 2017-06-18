@@ -1716,6 +1716,9 @@ def test_user_wrapper_restored():
     assert current_coro_wrapper == _coro_wrapper , "coroutine wrapper correctly reinstated on exit of run"
 
 
+async def unawaited():  # pragma: no cover
+    pass
+
 def test_run_with_allow_non_awaited_coroutine_true():
     "Check that both checkpoint an multierror do not raise"
 
@@ -1726,9 +1729,6 @@ def test_run_with_allow_non_awaited_coroutine_true():
             This will actually not be called, as there will be no errors.
             """
             return exc  # pragma: no cover
-
-        async def unawaited():
-            pass  # pragma: no cover
 
         with MultiError.catch(handler):
             unawaited()
@@ -1752,9 +1752,6 @@ def test_unawaited_coro_trigger_yield_if_cancelled():
         nonlocal called
         called = True
         pass
-
-    async def unawaited():
-        pass  # pragma: no cover
 
     async def run_me():
         unawaited()
