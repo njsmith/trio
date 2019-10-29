@@ -1,5 +1,6 @@
 # Utilities for testing
 import socket as stdlib_socket
+from contextlib import contextmanager
 
 import pytest
 
@@ -61,3 +62,18 @@ def check_sequence_matches(seq, template):
         got = set(seq[i:i + len(pattern)])
         assert got == pattern
         i += len(got)
+
+
+@contextmanager
+def tcp_stdlib_socketpair():
+    with stdlib_socket.socket() as listen_sock:
+        listen_sock.bind(("127.0.0.1", 0))
+        listen_sock.listen(1)
+        with stdlib_socket.socket() as client_sock:
+            client_sock.connect(listen_sock.getsockname())
+            server_sock, _ = listen_sock.accept()
+            with server_sock:
+                assert client_sock.getsockname() == server_sock.getpeername()
+                client_sock.setblocking(False)
+                server_sock.setblocking(False)
+                yield client_sock, server_sock

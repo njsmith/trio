@@ -10,6 +10,7 @@ from ..testing import (
 )
 from .._highlevel_socket import *
 from .. import socket as tsocket
+from .._core.tests.tutil import tcp_stdlib_socketpair
 
 
 async def test_SocketStream_basics():
@@ -32,22 +33,21 @@ async def test_SocketStream_basics():
     # Use a real, connected socket to test socket options, because
     # socketpair() might give us a unix socket that doesn't support any of
     # these options
-    with tsocket.socket() as listen_sock:
-        await listen_sock.bind(("127.0.0.1", 0))
-        listen_sock.listen(1)
-        with tsocket.socket() as client_sock:
-            await client_sock.connect(listen_sock.getsockname())
+    with tcp_stdlib_socketpair() as (a, b):
+        ta = tsocket.from_stdlib_socket(a)
+        s = SocketStream(ta)
 
-            s = SocketStream(client_sock)
+        # TCP_NODELAY enabled by default
+        assert s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY)
+        # We can disable it though
+        s.setsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY, False)
+        assert not s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY)
 
-            # TCP_NODELAY enabled by default
-            assert s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY)
-            # We can disable it though
-            s.setsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY, False)
-            assert not s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY)
+        b = s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY, 1)
+        assert isinstance(b, bytes)
 
-            b = s.getsockopt(tsocket.IPPROTO_TCP, tsocket.TCP_NODELAY, 1)
-            assert isinstance(b, bytes)
+        # SO_OOBINLINE enabled by default
+        assert s.getsockopt(tsocket.SOL_SOCKET, tsocket.SO_OOBINLINE)
 
 
 async def test_SocketStream_send_all():
@@ -262,3 +262,30 @@ async def test_socket_stream_works_when_peer_has_already_closed():
     stream = SocketStream(sock_a)
     assert await stream.receive_some(1) == b"x"
     assert await stream.receive_some(1) == b""
+
+
+async def test_oob_data():
+    # To test OOB data we need to set up a TCP connection. socketpair()
+    # doesn't work, because it gives us Unix domain sockets, and those
+    # generally don't support OOB data.
+    with tcp_stdlib_socketpair() as (a, b):
+        ta = tsocket.from_stdlib_socket(a)
+        stream = SocketStream(ta)
+
+        # Check connection worked properly
+        b.send(b"x")
+        assert await stream.receive_some() == b"x"
+
+        # Now we send some OOB data
+        b.send(b"y", tsocket.MSG_OOB)
+        assert await stream.receive_some() == b"y"
+
+        # Make sure it works even if the receive_some is blocked and
+        # has to be woken up:
+        async def checked_receive():
+            assert await stream.receive_some() == b"z"
+
+        async with _core.open_nursery() as nursery:
+            nursery.start_soon(checked_receive)
+            await wait_all_tasks_blocked()
+            b.send(b"z", tsocket.MSG_OOB)

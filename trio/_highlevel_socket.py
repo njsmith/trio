@@ -81,6 +81,19 @@ class SocketStream(HalfCloseableStream):
         except OSError:
             pass
 
+        # Sockets have an "OOB data" feature that's essentially useless, and
+        # we don't have the infrastructure to support it anyway. And, as a
+        # rarely-used, remotely-triggerable feature, it has a history of
+        # producing security bugs (e.g. CVE-2015-1105). So let's reduce our
+        # attack surface by disabling it.
+        try:
+            self.setsockopt(tsocket.SOL_SOCKET, tsocket.SO_OOBINLINE, True)
+        except OSError:
+            # I don't know how this could fail, but libuv had some issues with
+            # it (https://github.com/libuv/libuv/pull/228) and it's a
+            # best-effort mitigation anyway, so ignore errors.
+            pass
+
         if hasattr(tsocket, "TCP_NOTSENT_LOWAT"):
             try:
                 # 16 KiB is pretty arbitrary and could probably do with some

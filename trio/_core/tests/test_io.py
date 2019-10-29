@@ -8,6 +8,7 @@ import errno
 from ... import _core
 from ...testing import wait_all_tasks_blocked, Sequencer, assert_checkpoints
 import trio
+from .tutil import tcp_stdlib_socketpair, slow
 
 # Cross-platform tests for IO handling
 
@@ -352,3 +353,47 @@ async def test_io_manager_statistics():
 
         # 1 for call_soon_task
         check(expected_readers=1, expected_writers=0)
+
+
+@slow
+async def test_oob_handling():
+    record = []
+
+    async def r_task(sock):
+        await _core.wait_readable(sock)
+        record.append("r_task")
+
+    async def w_task(sock):
+        await _core.wait_writable(sock)
+        record.append("w_task")
+
+    with tcp_stdlib_socketpair() as (a, b):
+        fill_socket(a)
+        b.send(b"x", stdlib_socket.MSG_OOB)
+
+        # By default, OOB data should *not* cause either wait_* to wake up
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(r_task, a)
+            nursery.start_soon(w_task, a)
+            await trio.sleep(1)
+            assert record == []
+            nursery.cancel_scope.cancel()
+
+    record = []
+
+    # But if we enable SO_OOBINLINE, then OOB data should cause wait_readable
+    # to wake up (but not wait_writable).
+    with tcp_stdlib_socketpair() as (a, b):
+        fill_socket(a)
+        # Enable SO_OOBINLINE first, just to make sure we don't hit this bug:
+        #   https://bugzilla.kernel.org/show_bug.cgi?id=205339
+        a.setsockopt(
+            stdlib_socket.SOL_SOCKET, stdlib_socket.SO_OOBINLINE, True
+        )
+        b.send(b"x", stdlib_socket.MSG_OOB)
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(r_task, a)
+            nursery.start_soon(w_task, a)
+            await trio.sleep(1)
+            assert record == ["r_task"]
+            nursery.cancel_scope.cancel()
